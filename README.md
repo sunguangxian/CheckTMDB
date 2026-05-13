@@ -1,155 +1,241 @@
-# CheckTMDB
+# CheckTMDB for ImmortalWrt
 
-每日自动更新TMDB，themoviedb、thetvdb 国内可正常连接IP，解决DNS污染，供tinyMediaManager(TMM削刮器)、Kodi的刮削器、群晖VideoStation的海报墙、Plex Server的元数据代理、Emby Server元数据下载器、Infuse、Nplayer等正常削刮影片信息。
+这是一个面向 ImmortalWrt 的脚本版 TMDB hosts 更新工具，不需要 LuCI 插件，也不需要编译 `.ipk`。
 
-## 一、前景
+运行流程：
 
-自从我早两年使用了黑群NAS以后，下了好多的电影电视剧，发现电视端无法生成正常的海报墙。查找资料得知应该是 themoviedb.org、tmdb.org 无法正常访问，因为DNS受到了污染无法正确解析到TMDB的IP，故依葫芦画瓢写了一个python脚本，每日定时通过[dnschecker](https://dnschecker.org/)查询出最佳IP，并自动同步到路由器外挂hosts，可正常削刮。
-
-**本项目无需安装任何程序**
-
-通过修改本地、路由器 hosts 文件，即可正常削刮影片信息。
-
-## 文件地址
-
-- TMDB IPv4 hosts：`https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv4` ，[链接](https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv4)
-- TMDB IPv6 hosts：`https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv6` ，[链接](https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv6)
-
-## 二、使用方法
-
-### 2.1 手动方式
-
-#### 2.1.1 IPv4地址复制下面的内容
-
-```bash
-# Tmdb Hosts Start
-18.238.132.46               tmdb.org
-52.222.205.23               api.tmdb.org
-52.222.205.108              files.tmdb.org
-52.222.205.102              themoviedb.org
-18.161.156.100              api.themoviedb.org
-52.222.205.102              www.themoviedb.org
-108.138.167.60              auth.themoviedb.org
-143.244.60.196              image.tmdb.org
-185.93.1.246                images.tmdb.org
-98.82.155.134               imdb.com
-18.154.215.49               www.imdb.com
-18.154.215.49               secure.imdb.com
-18.154.215.49               s.media-imdb.com
-98.82.158.179               us.dd.imdb.com
-18.154.215.49               www.imdb.to
-98.82.155.134               origin-www.imdb.com
-23.47.50.91                 ia.media-imdb.com
-13.225.70.80                thetvdb.com
-13.225.228.87               api.thetvdb.com
-151.101.65.16               ia.media-imdb.com
-151.101.65.16               f.media-amazon.com
-52.84.217.43                imdb-video.media-imdb.com
-148.113.196.166             webservice.fanart.tv
-104.26.12.126               images.fanart.tv
-158.69.210.98               assets.fanart.tv
-104.26.12.126               fanart.tv
-104.20.13.80                api.trakt.tv
-104.20.13.80                trakt.tv
-# Update time: 2026-05-13T20:11:05+08:00
-# IPv4 Update url: https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv4
-# IPv6 Update url: https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv6
-# Star me: https://github.com/cnwikee/CheckTMDB
-# Tmdb Hosts End
-
+```text
+cron
+  -> /root/checktmdb/checktmdb-update.sh
+  -> python3 check_tmdb.py
+  -> /tmp/checktmdb.hosts
+  -> dnsmasq addn-hosts
+  -> Jellyfin / MoviePilot / Emby / Plex 生效
 ```
 
-该内容会自动定时更新， 数据更新时间：2026-05-13T20:11:05+08:00
+## 文件结构
 
-#### 2.1.2 IPv6地址复制下面的内容
-
-```bash
-# Tmdb Hosts Start
-2600:9000:2466:ea00:10:db24:6940:93a1              tmdb.org
-2600:9000:2027:dc00:10:fb02:4000:93a1              api.tmdb.org
-2600:9000:2027:5c00:5:da10:7440:93a1               files.tmdb.org
-2600:9000:2027:d200:e:5373:440:93a1                themoviedb.org
-2600:9000:2464:1e00:c:174a:c400:93a1               api.themoviedb.org
-2600:9000:2027:fc00:e:5373:440:93a1                www.themoviedb.org
-2600:9000:2356:9a00:16:e4a1:eb00:93a1              auth.themoviedb.org
-2400:52e0:1a00::1347:1                             image.tmdb.org
-2400:52e0:1a00::894:1                              images.tmdb.org
-2600:9000:2027:cc00:1d:d7f6:39d6:3b01              ia.media-imdb.com
-2600:9000:2027:7800:1d:d7f6:39d6:3b01              ia.media-imdb.com
-2a04:4e42:600::272                                 f.media-amazon.com
-2606:4700:20::681a:d7e                             images.fanart.tv
-2606:4700:20::681a:d7e                             fanart.tv
-2606:4700:10::6814:e50                             api.trakt.tv
-2606:4700:10::6814:e50                             trakt.tv
-# Update time: 2026-05-13T20:11:05+08:00
-# IPv4 Update url: https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv4
-# IPv6 Update url: https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv6
-# Star me: https://github.com/cnwikee/CheckTMDB
-# Tmdb Hosts End
-
+```text
+root/checktmdb/
+├── check_tmdb.py
+├── checktmdb-update.sh
+└── install.sh
 ```
 
-该内容会自动定时更新， 数据更新时间：2026-05-13T20:11:05+08:00
+部署到路由器后的路径：
 
-> [!NOTE]
-> 由于项目搭建在Github Aciton，延时数据获取于Github Action 虚拟主机网络环境，请自行测试可用性，建议使用本地网络环境自动设置。
+```text
+/root/checktmdb/
+├── check_tmdb.py
+├── checktmdb-update.sh
+└── install.sh
+```
 
-#### 2.1.3 修改 hosts 文件
+## 安装
 
-hosts 文件在每个系统的位置不一，详情如下：
+把 `root/checktmdb` 上传到 ImmortalWrt：
 
-- Windows 系统：`C:\Windows\System32\drivers\etc\hosts`
-- Linux 系统：`/etc/hosts`
-- Mac（苹果电脑）系统：`/etc/hosts`
-- Android（安卓）系统：`/system/etc/hosts`
-- iPhone（iOS）系统：`/etc/hosts`
+```sh
+scp -O -r root/checktmdb root@192.168.2.1:/root/
+```
 
-修改方法，把第一步的内容复制到文本末尾：
+在路由器上执行：
 
-1. Windows 使用记事本。
-2. Linux、Mac 使用 Root 权限：`sudo vi /etc/hosts`。
-3. iPhone、iPad 须越狱、Android 必须要 root。
+```sh
+cd /root/checktmdb
+sh install.sh
+```
 
-#### 2.1.4 激活生效
+安装脚本会做这些事：
 
-大部分情况下是直接生效，如未生效可尝试下面的办法，刷新 DNS：
+```sh
+opkg update
+opkg install python3 python3-requests curl ca-bundle
+uci add_list dhcp.@dnsmasq[0].addnhosts='/tmp/checktmdb.hosts'
+uci commit dhcp
+/etc/init.d/dnsmasq restart
+/etc/init.d/cron restart
+```
 
-1. Windows：在 CMD 窗口输入：`ipconfig /flushdns`
+默认每 6 小时更新一次，默认检测香港节点。
 
-2. Linux 命令：`sudo nscd restart`，如报错则须安装：`sudo apt install nscd` 或 `sudo /etc/init.d/nscd restart`
+## 自定义安装参数
 
-3. Mac 命令：`sudo killall -HUP mDNSResponder`
+支持的国家节点：
 
-**Tips：** 上述方法无效可以尝试重启机器。
+```text
+hk = 香港
+sg = 新加坡
+jp = 日本
+us = 美国
+```
 
-### 2.2 自动方式
+支持的更新间隔：
 
-#### 2.2.1 安装 SwitchHosts
+```text
+6 / 12 / 24 小时
+```
 
-GitHub 发行版：https://github.com/oldj/SwitchHosts/releases/latest
+示例：
 
-#### 2.2.2 添加 hosts
+```sh
+CHECKTMDB_COUNTRY=sg CHECKTMDB_INTERVAL=12 CHECKTMDB_IPV6=1 CHECKTMDB_TIMEOUT=1.5 sh install.sh
+```
 
-点击左上角“+”，并进行以下配置：
+`CHECKTMDB_TIMEOUT` 是 TCP 连接测试超时，单位秒。路由器上建议保持 `1.5` 到 `2`，太大会导致首次更新很慢。
 
-- Hosts 类型：`远程`
-- Hosts 标题：任意
-- URL
-    - IPv4：`https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv4`
-    - IPv6：`https://raw.githubusercontent.com/cnwikee/CheckTMDB/refs/heads/main/Tmdb_host_ipv6`
-- 自动刷新：`1 小时`
+## 手动更新
 
-#### 2.2.3 启用 hosts
+```sh
+/root/checktmdb/checktmdb-update.sh run
+```
 
-在左侧边栏启用 hosts，首次使用时软件会自动获取内容。如果无法连接到 GitHub，可以尝试用同样的方法添加 [GitHub520](https://github.com/521xueweihan/GitHub520) hosts。
+## 更新脚本本身
 
-## 三、参数说明
+默认从 GitHub raw 地址更新：
 
-1. 直接执行`check_tmdb_github.py`脚本，同时查询IPv4及IPv6地址，目录生成`Tmdb_host_ipv4`文件，及`Tmdb_host_ipv6`文件；
-2. 带`-G` 参数执行：`check_tmdb_github.py -G`，会在`Tmdb_host_ipv4`文件，及`Tmdb_host_ipv6`文件中追加 Github IPv4 地址；
+```sh
+/root/checktmdb/checktmdb-update.sh self-update
+```
 
-## 其他
+如果你使用自己的仓库、分支或镜像，可以覆盖下载地址。地址需要指向包含 `check_tmdb.py`、`checktmdb-update.sh`、`install.sh` 的目录：
 
-- [x] 自学薄弱编程基础，大部分代码基于AI辅助生成，此项目过程中，主要人为解决的是：通过 [dnschecker](https://dnschecker.org/) 提交时，通过计算出正确的udp参数，获取正确的csrftoken，携带正确的referer提交！
-- [x] README.md 及 部分代码 参考[GitHub520](https://github.com/521xueweihan/GitHub520)
-- [x] * 本项目仅在本机测试通过，如有问题欢迎提 [issues](https://github.com/cnwikee/CheckTMDB/issues/new)
+```sh
+CHECKTMDB_UPDATE_BASE='https://raw.githubusercontent.com/sunguangxian/CheckTMDB/refs/heads/main/root/checktmdb' \
+  /root/checktmdb/checktmdb-update.sh self-update
+```
+
+也可以通过安装脚本触发：
+
+```sh
+cd /root/checktmdb
+sh install.sh self-update
+```
+
+自更新会先下载到 `/tmp`，检查三个文件非空，并分别执行 Python/shell 语法检查，通过后才替换 `/root/checktmdb` 下的脚本。
+
+查看状态：
+
+```sh
+/root/checktmdb/checktmdb-update.sh status
+```
+
+查看生成的 hosts：
+
+```sh
+cat /tmp/checktmdb.hosts
+```
+
+查看脚本日志：
+
+```sh
+tail -n 200 /tmp/checktmdb.log
+```
+
+查看正在运行的 CheckTMDB 任务：
+
+```sh
+/root/checktmdb/checktmdb-update.sh ps
+```
+
+停止正在运行的任务：
+
+```sh
+/root/checktmdb/checktmdb-update.sh stop
+```
+
+如果普通停止后仍未退出，强制停止：
+
+```sh
+/root/checktmdb/checktmdb-update.sh kill
+```
+
+查看系统日志：
+
+```sh
+logread -e checktmdb
+```
+
+## cron
+
+安装脚本会写入 `/etc/crontabs/root`。
+
+默认配置：
+
+```cron
+0 */6 * * * CHECKTMDB_COUNTRY=hk CHECKTMDB_IPV6=0 CHECKTMDB_TIMEOUT=1.5 /root/checktmdb/checktmdb-update.sh run
+```
+
+修改后重启 cron：
+
+```sh
+/etc/init.d/cron restart
+```
+
+## dnsmasq
+
+脚本生成：
+
+```sh
+/tmp/checktmdb.hosts
+```
+
+dnsmasq 引用：
+
+```sh
+uci add_list dhcp.@dnsmasq[0].addnhosts='/tmp/checktmdb.hosts'
+uci commit dhcp
+/etc/init.d/dnsmasq restart
+```
+
+更新完成后执行：
+
+```sh
+/etc/init.d/dnsmasq reload
+```
+
+如果 reload 失败，更新脚本会自动退回 restart。
+
+## 检测策略
+
+`check_tmdb.py` 使用 Python + requests 查询 DNS over HTTPS，并选择可连接的 IP。
+
+优先级：
+
+1. AliDNS DoH
+2. DNSPod DoH
+3. Cloudflare DoH
+4. Google DoH
+5. 系统解析
+
+对候选 IP 会测试 TCP 443 和 80，优先选择可连接且延迟较低的 IP。若所有候选 IP 都无法 TCP 连接，则保留第一个解析结果，避免 hosts 为空。
+
+## 常用命令
+
+重新安装或更新 cron：
+
+```sh
+cd /root/checktmdb
+CHECKTMDB_COUNTRY=hk CHECKTMDB_INTERVAL=6 CHECKTMDB_IPV6=0 sh install.sh
+```
+
+仅更新脚本：
+
+```sh
+/root/checktmdb/checktmdb-update.sh self-update
+```
+
+仅运行一次：
+
+```sh
+CHECKTMDB_COUNTRY=jp CHECKTMDB_IPV6=1 CHECKTMDB_TIMEOUT=1.5 /root/checktmdb/checktmdb-update.sh run
+```
+
+首次运行需要等待脚本完整结束才会写入 `/tmp/checktmdb.hosts`。如果中途按 `Ctrl+C`，更新脚本会丢弃临时文件，保留原 hosts；第一次安装时原 hosts 为空，所以 `cat /tmp/checktmdb.hosts` 也会是空的。
+
+清理 cron：
+
+```sh
+sed -i '\#/root/checktmdb/checktmdb-update.sh#d' /etc/crontabs/root
+/etc/init.d/cron restart
+```
