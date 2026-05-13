@@ -2,6 +2,7 @@
 import argparse
 import ipaddress
 import socket
+import ssl
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,6 +49,10 @@ COUNTRY_ECS = {
     "us": "8.8.8.0/24",
 }
 
+# Some API domains may return 401/403/404 without credentials or a valid path.
+# That still proves the selected IP can complete TCP + TLS + HTTP with correct SNI.
+HTTPS_OK_STATUS_MAX = 499
+
 
 def log(message):
     print(message, file=sys.stderr, flush=True)
@@ -79,7 +84,7 @@ class DnsClient:
         self.session.headers.update(
             {
                 "accept": "application/dns-json, application/json, */*",
-                "user-agent": "checktmdb/1.0",
+                "user-agent": "checktmdb/1.1",
             }
         )
 
@@ -176,6 +181,47 @@ class DnsClient:
         return []
 
 
+def _format_connect_host(ip):
+    # socket.create_connection accepts IPv6 literal directly, no bracket is needed.
+    return ip
+
+
+def https_probe(domain, ip, timeout):
+    """Return (latency_ms, status_code) if HTTPS with SNI works, otherwise (None, None)."""
+    start = time.monotonic()
+    context = ssl.create_default_context()
+
+    try:
+        raw_sock = socket.create_connection((_format_connect_host(ip), 443), timeout=timeout)
+        raw_sock.settimeout(timeout)
+        with raw_sock:
+            with context.wrap_socket(raw_sock, server_hostname=domain) as tls_sock:
+                request = (
+                    f"HEAD / HTTP/1.1\r\n"
+                    f"Host: {domain}\r\n"
+                    f"User-Agent: checktmdb/1.1\r\n"
+                    f"Accept: */*\r\n"
+                    f"Connection: close\r\n\r\n"
+                ).encode("ascii")
+                tls_sock.sendall(request)
+                data = tls_sock.recv(256)
+    except Exception:
+        return None, None
+
+    latency = int((time.monotonic() - start) * 1000)
+    try:
+        first_line = data.splitlines()[0].decode("iso-8859-1", errors="replace")
+        parts = first_line.split()
+        status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
+    except Exception:
+        status = 0
+
+    if 100 <= status <= HTTPS_OK_STATUS_MAX:
+        return latency, status
+
+    return None, status
+
+
 def tcp_latency(ip, timeout):
     best = None
     for port in (443, 80):
@@ -190,30 +236,56 @@ def tcp_latency(ip, timeout):
     return best
 
 
-def choose_ip(ips, timeout, max_workers):
+def choose_ip(domain, ips, timeout, max_workers, probe_mode):
     fallback = ips[0] if ips else None
     best_ip = None
     best_latency = None
 
     worker_count = max(1, min(max_workers, len(ips) or 1))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {executor.submit(tcp_latency, ip, timeout): ip for ip in ips}
+        if probe_mode == "tcp":
+            futures = {executor.submit(tcp_latency, ip, timeout): ip for ip in ips}
+        else:
+            futures = {executor.submit(https_probe, domain, ip, timeout): ip for ip in ips}
+
         for future in as_completed(futures):
             ip = futures[future]
             try:
-                latency = future.result()
+                result = future.result()
             except Exception as exc:
-                log(f"test {ip}: failed: {exc}")
+                log(f"test {domain} {ip}: failed: {exc}")
                 continue
 
+            if probe_mode == "tcp":
+                latency = result
+                status = None
+            else:
+                latency, status = result
+
             if latency is None:
-                log(f"test {ip}: unreachable")
+                if status:
+                    log(f"test {domain} {ip}: https failed, status={status}")
+                else:
+                    log(f"test {domain} {ip}: unreachable")
                 continue
-            log(f"test {ip}: {latency} ms")
+
+            if status:
+                log(f"test {domain} {ip}: https {status}, {latency} ms")
+            else:
+                log(f"test {domain} {ip}: tcp {latency} ms")
+
             if best_latency is None or latency < best_latency:
                 best_ip = ip
                 best_latency = latency
-    return best_ip or fallback
+
+    if best_ip:
+        return best_ip
+
+    if probe_mode == "https-with-tcp-fallback":
+        log(f"test {domain}: no HTTPS candidate, fallback to TCP probe")
+        return choose_ip(domain, ips, timeout, max_workers, "tcp")
+
+    return fallback
 
 
 def build_hosts(args):
@@ -222,7 +294,7 @@ def build_hosts(args):
 
     for domain in DOMAINS:
         ipv4s = dns.query(domain, "A")
-        ipv4 = choose_ip(ipv4s, args.connect_timeout, args.workers)
+        ipv4 = choose_ip(domain, ipv4s, args.connect_timeout, args.workers, args.probe_mode)
         if ipv4:
             results.append((ipv4, domain))
             log(f"A {domain}: selected {ipv4}")
@@ -231,7 +303,7 @@ def build_hosts(args):
 
         if args.ipv6:
             ipv6s = dns.query(domain, "AAAA")
-            ipv6 = choose_ip(ipv6s, args.connect_timeout, args.workers)
+            ipv6 = choose_ip(domain, ipv6s, args.connect_timeout, args.workers, args.probe_mode)
             if ipv6:
                 results.append((ipv6, domain))
                 log(f"AAAA {domain}: selected {ipv6}")
@@ -241,12 +313,13 @@ def build_hosts(args):
     return results
 
 
-def render_hosts(results, country, ipv6):
+def render_hosts(results, country, ipv6, probe_mode):
     update_time = datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0)
     lines = [
         "# CheckTMDB Hosts Start",
         f"# Country: {country}",
         f"# IPv6: {'1' if ipv6 else '0'}",
+        f"# Probe mode: {probe_mode}",
     ]
     for ip, domain in results:
         lines.append(f"{ip:<45} {domain}")
@@ -277,6 +350,12 @@ def parse_args():
     parser.add_argument("--connect-timeout", "--timeout", dest="connect_timeout", type=float, default=1.5)
     parser.add_argument("--dns-timeout", type=float, default=5.0)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--probe-mode",
+        choices=("https", "https-with-tcp-fallback", "tcp"),
+        default="https-with-tcp-fallback",
+        help="https: require TCP+TLS+HTTP with SNI; tcp: old behavior; https-with-tcp-fallback: prefer HTTPS, fallback to TCP if no HTTPS candidate works",
+    )
     return parser.parse_args()
 
 
@@ -286,7 +365,7 @@ def main():
     if not results:
         log("no hosts generated")
         return 1
-    write_output(args.output, render_hosts(results, args.country, args.ipv6))
+    write_output(args.output, render_hosts(results, args.country, args.ipv6, args.probe_mode))
     log(f"generated {len(results)} hosts: {args.output}")
     return 0
 
