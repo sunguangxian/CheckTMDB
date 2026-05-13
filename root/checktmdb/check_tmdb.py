@@ -49,9 +49,21 @@ COUNTRY_ECS = {
     "us": "8.8.8.0/24",
 }
 
-# Some API domains may return 401/403/404 without credentials or a valid path.
-# That still proves the selected IP can complete TCP + TLS + HTTP with correct SNI.
+# API domains often return 401/403 without credentials. That is still useful:
+# it proves TCP + TLS + SNI + HTTP reached the real service.
 HTTPS_OK_STATUS_MAX = 499
+
+# Use a more realistic path than HEAD /. This makes the result closer to
+# Jellyfin / MoviePilot / Emby / tinyMediaManager behavior.
+PROBE_PATHS = {
+    "api.tmdb.org": "/3/configuration",
+    "api.themoviedb.org": "/3/configuration",
+    "image.tmdb.org": "/t/p/w92",
+    "images.tmdb.org": "/t/p/w92",
+    "api.thetvdb.com": "/v4/search?query=test",
+    "api.trakt.tv": "/users/settings",
+    "webservice.fanart.tv": "/v3/movies/550",
+}
 
 
 def log(message):
@@ -84,7 +96,7 @@ class DnsClient:
         self.session.headers.update(
             {
                 "accept": "application/dns-json, application/json, */*",
-                "user-agent": "checktmdb/1.1",
+                "user-agent": "checktmdb/1.2",
             }
         )
 
@@ -181,32 +193,33 @@ class DnsClient:
         return []
 
 
-def _format_connect_host(ip):
-    # socket.create_connection accepts IPv6 literal directly, no bracket is needed.
-    return ip
+def probe_path(domain):
+    return PROBE_PATHS.get(domain, "/")
 
 
 def https_probe(domain, ip, timeout):
-    """Return (latency_ms, status_code) if HTTPS with SNI works, otherwise (None, None)."""
+    """Return (latency_ms, status_code, path) if HTTPS works, otherwise (None, status, path)."""
     start = time.monotonic()
     context = ssl.create_default_context()
+    path = probe_path(domain)
 
     try:
-        raw_sock = socket.create_connection((_format_connect_host(ip), 443), timeout=timeout)
+        raw_sock = socket.create_connection((ip, 443), timeout=timeout)
         raw_sock.settimeout(timeout)
         with raw_sock:
             with context.wrap_socket(raw_sock, server_hostname=domain) as tls_sock:
                 request = (
-                    f"HEAD / HTTP/1.1\r\n"
+                    f"GET {path} HTTP/1.1\r\n"
                     f"Host: {domain}\r\n"
-                    f"User-Agent: checktmdb/1.1\r\n"
-                    f"Accept: */*\r\n"
+                    f"User-Agent: checktmdb/1.2\r\n"
+                    f"Accept: application/json, text/html, image/*, */*\r\n"
+                    f"Range: bytes=0-511\r\n"
                     f"Connection: close\r\n\r\n"
                 ).encode("ascii")
                 tls_sock.sendall(request)
-                data = tls_sock.recv(256)
+                data = tls_sock.recv(512)
     except Exception:
-        return None, None
+        return None, None, path
 
     latency = int((time.monotonic() - start) * 1000)
     try:
@@ -217,9 +230,9 @@ def https_probe(domain, ip, timeout):
         status = 0
 
     if 100 <= status <= HTTPS_OK_STATUS_MAX:
-        return latency, status
+        return latency, status, path
 
-    return None, status
+    return None, status, path
 
 
 def tcp_latency(ip, timeout):
@@ -259,18 +272,19 @@ def choose_ip(domain, ips, timeout, max_workers, probe_mode):
             if probe_mode == "tcp":
                 latency = result
                 status = None
+                path = None
             else:
-                latency, status = result
+                latency, status, path = result
 
             if latency is None:
                 if status:
-                    log(f"test {domain} {ip}: https failed, status={status}")
+                    log(f"test {domain} {ip}: https failed, path={path}, status={status}")
                 else:
-                    log(f"test {domain} {ip}: unreachable")
+                    log(f"test {domain} {ip}: unreachable, path={path}")
                 continue
 
             if status:
-                log(f"test {domain} {ip}: https {status}, {latency} ms")
+                log(f"test {domain} {ip}: https {status}, path={path}, {latency} ms")
             else:
                 log(f"test {domain} {ip}: tcp {latency} ms")
 
