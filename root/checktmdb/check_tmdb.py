@@ -5,6 +5,7 @@ import socket
 import ssl
 import sys
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -88,6 +89,19 @@ def unique(items):
     return result
 
 
+def ip_group(ip):
+    try:
+        value = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+
+    if value.version == 4:
+        parts = ip.split(".")
+        return ".".join(parts[:3]) if len(parts) >= 3 else ip
+
+    return ":".join(value.exploded.split(":")[:4])
+
+
 class DnsClient:
     def __init__(self, country, timeout):
         self.ecs = COUNTRY_ECS[country]
@@ -96,7 +110,7 @@ class DnsClient:
         self.session.headers.update(
             {
                 "accept": "application/dns-json, application/json, */*",
-                "user-agent": "checktmdb/1.2",
+                "user-agent": "checktmdb/1.3",
             }
         )
 
@@ -179,18 +193,45 @@ class DnsClient:
             ("dnspod", self.query_dnspod),
             ("cloudflare", self.query_cloudflare),
             ("google", self.query_google),
-            ("system", self.query_system),
         ]
+
+        provider_results = []
+        group_counter = Counter()
+
         for name, provider in providers:
             try:
                 ips = provider(domain, record_type)
             except Exception as exc:
                 log(f"{record_type} {domain}: {name} failed: {exc}")
                 continue
+
+            if not ips:
+                continue
+
+            log(f"{record_type} {domain}: {name} returned {', '.join(ips)}")
+            provider_results.extend(ips)
+
+            for group in set(ip_group(ip) for ip in ips):
+                group_counter[group] += 1
+
+        if not provider_results:
+            try:
+                ips = self.query_system(domain, record_type)
+            except Exception as exc:
+                log(f"{record_type} {domain}: system failed: {exc}")
+                return []
             if ips:
-                log(f"{record_type} {domain}: {name} returned {', '.join(ips)}")
-                return ips
-        return []
+                log(f"{record_type} {domain}: system returned {', '.join(ips)}")
+            return ips
+
+        trusted_groups = {group for group, count in group_counter.items() if count >= 2}
+        if trusted_groups:
+            ips = unique(ip for ip in provider_results if ip_group(ip) in trusted_groups)
+            log(f"{record_type} {domain}: trusted groups = {', '.join(sorted(trusted_groups))}")
+            return ips
+
+        log(f"{record_type} {domain}: no DNS consensus, using all candidates")
+        return unique(provider_results)
 
 
 def probe_path(domain):
@@ -211,7 +252,7 @@ def https_probe(domain, ip, timeout):
                 request = (
                     f"GET {path} HTTP/1.1\r\n"
                     f"Host: {domain}\r\n"
-                    f"User-Agent: checktmdb/1.2\r\n"
+                    f"User-Agent: checktmdb/1.3\r\n"
                     f"Accept: application/json, text/html, image/*, */*\r\n"
                     f"Range: bytes=0-511\r\n"
                     f"Connection: close\r\n\r\n"
