@@ -54,6 +54,16 @@ COUNTRY_ECS = {
 # it proves TCP + TLS + SNI + HTTP reached the real service.
 HTTPS_OK_STATUS_MAX = 499
 
+# These domains are critical for scraper behavior. Do not accept TCP-only IPs for them,
+# because TCP success does not mean the API/image CDN can actually be used.
+STRICT_HTTPS_DOMAINS = {
+    "api.tmdb.org",
+    "api.themoviedb.org",
+    "image.tmdb.org",
+    "images.tmdb.org",
+    "www.themoviedb.org",
+}
+
 # Use a more realistic path than HEAD /. This makes the result closer to
 # Jellyfin / MoviePilot / Emby / tinyMediaManager behavior.
 PROBE_PATHS = {
@@ -110,7 +120,7 @@ class DnsClient:
         self.session.headers.update(
             {
                 "accept": "application/dns-json, application/json, */*",
-                "user-agent": "checktmdb/1.3",
+                "user-agent": "checktmdb/1.4",
             }
         )
 
@@ -252,7 +262,7 @@ def https_probe(domain, ip, timeout):
                 request = (
                     f"GET {path} HTTP/1.1\r\n"
                     f"Host: {domain}\r\n"
-                    f"User-Agent: checktmdb/1.3\r\n"
+                    f"User-Agent: checktmdb/1.4\r\n"
                     f"Accept: application/json, text/html, image/*, */*\r\n"
                     f"Range: bytes=0-511\r\n"
                     f"Connection: close\r\n\r\n"
@@ -291,7 +301,11 @@ def tcp_latency(ip, timeout):
 
 
 def choose_ip(domain, ips, timeout, max_workers, probe_mode):
-    fallback = ips[0] if ips else None
+    if domain in STRICT_HTTPS_DOMAINS and probe_mode == "https-with-tcp-fallback":
+        log(f"test {domain}: strict HTTPS mode enabled")
+        probe_mode = "https"
+
+    fallback = ips[0] if ips and probe_mode != "https" else None
     best_ip = None
     best_latency = None
 
