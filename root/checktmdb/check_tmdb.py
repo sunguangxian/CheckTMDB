@@ -44,6 +44,7 @@ DOMAINS = [
 ]
 
 COUNTRY_ECS = {
+    "cn": "223.5.5.0/24",
     "hk": "1.64.0.0/12",
     "sg": "103.6.148.0/22",
     "jp": "126.0.0.0/8",
@@ -120,7 +121,7 @@ class DnsClient:
         self.session.headers.update(
             {
                 "accept": "application/dns-json, application/json, */*",
-                "user-agent": "checktmdb/1.4",
+                "user-agent": "checktmdb/1.5",
             }
         )
 
@@ -262,7 +263,7 @@ def https_probe(domain, ip, timeout):
                 request = (
                     f"GET {path} HTTP/1.1\r\n"
                     f"Host: {domain}\r\n"
-                    f"User-Agent: checktmdb/1.4\r\n"
+                    f"User-Agent: checktmdb/1.5\r\n"
                     f"Accept: application/json, text/html, image/*, */*\r\n"
                     f"Range: bytes=0-511\r\n"
                     f"Connection: close\r\n\r\n"
@@ -413,7 +414,7 @@ def write_output(path, content):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate CheckTMDB hosts for ImmortalWrt.")
-    parser.add_argument("--country", choices=sorted(COUNTRY_ECS), default="hk")
+    parser.add_argument("--country", choices=sorted(COUNTRY_ECS), default="cn")
     parser.add_argument("--output", default="/tmp/checktmdb.hosts.new")
     parser.add_argument("--ipv6", action="store_true")
     parser.add_argument("--connect-timeout", "--timeout", dest="connect_timeout", type=float, default=1.5)
