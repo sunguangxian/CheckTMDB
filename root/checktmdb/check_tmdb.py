@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import ipaddress
+import json
 import socket
 import ssl
 import sys
@@ -52,6 +53,7 @@ COUNTRY_ECS = {
 }
 
 DNSMASQ_CONF_DEFAULT = "/tmp/checktmdb.d/tmdb.conf"
+CACHE_DEFAULT = "/tmp/checktmdb.cache.json"
 DNSMASQ_RULE_PREFIX = "addr" "ess=/"
 IPV6_EMPTY_VALUE = ":" ":"
 HTTPS_OK_STATUS_MAX = 499
@@ -110,6 +112,31 @@ def ip_group(ip):
     return ":".join(value.exploded.split(":")[:4])
 
 
+def now_iso():
+    return datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0).isoformat()
+
+
+def load_cache(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    hosts = data.get("hosts", {})
+    return hosts if isinstance(hosts, dict) else {}
+
+
+def save_cache(path, hosts):
+    cache = {
+        "updated_at": now_iso(),
+        "hosts": hosts,
+    }
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
 class DnsClient:
     def __init__(self, country, timeout):
         self.ecs = COUNTRY_ECS[country]
@@ -118,17 +145,12 @@ class DnsClient:
         self.session.headers.update(
             {
                 "accept": "application/dns-json, application/json, */*",
-                "user-agent": "checktmdb/1.6",
+                "user-agent": "checktmdb/1.7",
             }
         )
 
     def _json_get(self, url, params, headers=None):
-        response = self.session.get(
-            url,
-            params=params,
-            headers=headers or {},
-            timeout=self.timeout,
-        )
+        response = self.session.get(url, params=params, headers=headers or {}, timeout=self.timeout)
         response.raise_for_status()
         return response.json()
 
@@ -236,7 +258,7 @@ def https_probe(domain, ip, timeout):
                 request = (
                     f"GET {path} HTTP/1.1\r\n"
                     f"Host: {domain}\r\n"
-                    f"User-Agent: checktmdb/1.6\r\n"
+                    f"User-Agent: checktmdb/1.7\r\n"
                     f"Accept: application/json, text/html, image/*, */*\r\n"
                     f"Range: bytes=0-511\r\n"
                     f"Connection: close\r\n\r\n"
@@ -318,17 +340,42 @@ def choose_ip(domain, ips, timeout, max_workers, probe_mode):
     return fallback
 
 
+def cache_ip(cache_hosts, domain):
+    item = cache_hosts.get(domain)
+    if isinstance(item, dict):
+        ip = item.get("ip")
+    else:
+        ip = item
+    return ip if isinstance(ip, str) and is_ip(ip, 4) else None
+
+
+def update_cache_entry(cache_hosts, domain, ip):
+    cache_hosts[domain] = {
+        "ip": ip,
+        "updated_at": now_iso(),
+    }
+
+
 def build_hosts(args):
     dns = DnsClient(args.country, args.dns_timeout)
+    cache_hosts = load_cache(args.cache)
     results = []
+
     for domain in DOMAINS:
         ipv4s = dns.query(domain, "A")
         ipv4 = choose_ip(domain, ipv4s, args.connect_timeout, args.workers, args.probe_mode)
         if ipv4:
             results.append((ipv4, domain))
+            update_cache_entry(cache_hosts, domain, ipv4)
             log(f"A {domain}: selected {ipv4}")
         else:
-            log(f"A {domain}: skipped")
+            cached = cache_ip(cache_hosts, domain)
+            if cached:
+                results.append((cached, domain))
+                log(f"A {domain}: using cached {cached}")
+            else:
+                log(f"A {domain}: skipped")
+
         if args.ipv6:
             ipv6s = dns.query(domain, "AAAA")
             ipv6 = choose_ip(domain, ipv6s, args.connect_timeout, args.workers, args.probe_mode)
@@ -337,21 +384,21 @@ def build_hosts(args):
                 log(f"AAAA {domain}: selected {ipv6}")
             else:
                 log(f"AAAA {domain}: skipped")
+
+    save_cache(args.cache, cache_hosts)
     return results
 
 
 def render_hosts(results, country, ipv6, probe_mode):
-    update_time = datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0)
     lines = ["# CheckTMDB Hosts Start", f"# Country: {country}", f"# IPv6: {'1' if ipv6 else '0'}", f"# Probe mode: {probe_mode}"]
     for ip, domain in results:
         lines.append(f"{ip:<45} {domain}")
-    lines.extend([f"# Update time: {update_time.isoformat()}", "# CheckTMDB Hosts End", ""])
+    lines.extend([f"# Update time: {now_iso()}", "# CheckTMDB Hosts End", ""])
     return "\n".join(lines)
 
 
 def render_dnsmasq_conf(results, block_ipv6):
-    update_time = datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0)
-    lines = ["# CheckTMDB dnsmasq config", f"# Update time: {update_time.isoformat()}"]
+    lines = ["# CheckTMDB dnsmasq config", f"# Update time: {now_iso()}"]
     for ip, domain in results:
         lines.append(f"{DNSMASQ_RULE_PREFIX}{domain}/{ip}")
         if block_ipv6 and is_ip(ip, 4):
@@ -374,6 +421,7 @@ def parse_args():
     parser.add_argument("--country", choices=sorted(COUNTRY_ECS), default="cn")
     parser.add_argument("--output", default="/tmp/checktmdb.hosts.new")
     parser.add_argument("--dnsmasq-output", default=DNSMASQ_CONF_DEFAULT)
+    parser.add_argument("--cache", default=CACHE_DEFAULT)
     parser.add_argument("--no-block-ipv6", action="store_true")
     parser.add_argument("--ipv6", action="store_true")
     parser.add_argument("--connect-timeout", "--timeout", dest="connect_timeout", type=float, default=1.5)
@@ -393,6 +441,7 @@ def main():
     write_output(args.dnsmasq_output, render_dnsmasq_conf(results, not args.no_block_ipv6))
     log(f"generated {len(results)} hosts: {args.output}")
     log(f"generated dnsmasq config: {args.dnsmasq_output}")
+    log(f"updated cache: {args.cache}")
     return 0
 
 
