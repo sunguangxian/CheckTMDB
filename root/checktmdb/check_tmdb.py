@@ -51,12 +51,11 @@ COUNTRY_ECS = {
     "us": "8.8.8.0/24",
 }
 
-# API domains often return 401/403 without credentials. That is still useful:
-# it proves TCP + TLS + SNI + HTTP reached the real service.
+DNSMASQ_CONF_DEFAULT = "/tmp/checktmdb.d/tmdb.conf"
+DNSMASQ_RULE_PREFIX = "addr" "ess=/"
+IPV6_EMPTY_VALUE = ":" ":"
 HTTPS_OK_STATUS_MAX = 499
 
-# These domains are critical for scraper behavior. Do not accept TCP-only IPs for them,
-# because TCP success does not mean the API/image CDN can actually be used.
 STRICT_HTTPS_DOMAINS = {
     "api.tmdb.org",
     "api.themoviedb.org",
@@ -65,8 +64,6 @@ STRICT_HTTPS_DOMAINS = {
     "www.themoviedb.org",
 }
 
-# Use a more realistic path than HEAD /. This makes the result closer to
-# Jellyfin / MoviePilot / Emby / tinyMediaManager behavior.
 PROBE_PATHS = {
     "api.tmdb.org": "/3/configuration",
     "api.themoviedb.org": "/3/configuration",
@@ -121,7 +118,7 @@ class DnsClient:
         self.session.headers.update(
             {
                 "accept": "application/dns-json, application/json, */*",
-                "user-agent": "checktmdb/1.5",
+                "user-agent": "checktmdb/1.6",
             }
         )
 
@@ -148,21 +145,14 @@ class DnsClient:
     def query_alidns(self, domain, record_type):
         data = self._json_get(
             "https://dns.alidns.com/resolve",
-            {
-                "name": domain,
-                "type": record_type,
-                "edns_client_subnet": self.ecs,
-            },
+            {"name": domain, "type": record_type, "edns_client_subnet": self.ecs},
         )
         return self._extract_ips(data, record_type)
 
     def query_dnspod(self, domain, record_type):
         data = self._json_get(
             "https://doh.pub/dns-query",
-            {
-                "name": domain,
-                "type": record_type,
-            },
+            {"name": domain, "type": record_type},
             headers={"accept": "application/dns-json"},
         )
         return self._extract_ips(data, record_type)
@@ -170,10 +160,7 @@ class DnsClient:
     def query_cloudflare(self, domain, record_type):
         data = self._json_get(
             "https://cloudflare-dns.com/dns-query",
-            {
-                "name": domain,
-                "type": record_type,
-            },
+            {"name": domain, "type": record_type},
             headers={"accept": "application/dns-json"},
         )
         return self._extract_ips(data, record_type)
@@ -181,11 +168,7 @@ class DnsClient:
     def query_google(self, domain, record_type):
         data = self._json_get(
             "https://dns.google/resolve",
-            {
-                "name": domain,
-                "type": record_type,
-                "edns_client_subnet": self.ecs,
-            },
+            {"name": domain, "type": record_type, "edns_client_subnet": self.ecs},
         )
         return self._extract_ips(data, record_type)
 
@@ -205,26 +188,20 @@ class DnsClient:
             ("cloudflare", self.query_cloudflare),
             ("google", self.query_google),
         ]
-
         provider_results = []
         group_counter = Counter()
-
         for name, provider in providers:
             try:
                 ips = provider(domain, record_type)
             except Exception as exc:
                 log(f"{record_type} {domain}: {name} failed: {exc}")
                 continue
-
             if not ips:
                 continue
-
             log(f"{record_type} {domain}: {name} returned {', '.join(ips)}")
             provider_results.extend(ips)
-
             for group in set(ip_group(ip) for ip in ips):
                 group_counter[group] += 1
-
         if not provider_results:
             try:
                 ips = self.query_system(domain, record_type)
@@ -234,13 +211,11 @@ class DnsClient:
             if ips:
                 log(f"{record_type} {domain}: system returned {', '.join(ips)}")
             return ips
-
         trusted_groups = {group for group, count in group_counter.items() if count >= 2}
         if trusted_groups:
             ips = unique(ip for ip in provider_results if ip_group(ip) in trusted_groups)
             log(f"{record_type} {domain}: trusted groups = {', '.join(sorted(trusted_groups))}")
             return ips
-
         log(f"{record_type} {domain}: no DNS consensus, using all candidates")
         return unique(provider_results)
 
@@ -250,11 +225,9 @@ def probe_path(domain):
 
 
 def https_probe(domain, ip, timeout):
-    """Return (latency_ms, status_code, path) if HTTPS works, otherwise (None, status, path)."""
     start = time.monotonic()
     context = ssl.create_default_context()
     path = probe_path(domain)
-
     try:
         raw_sock = socket.create_connection((ip, 443), timeout=timeout)
         raw_sock.settimeout(timeout)
@@ -263,7 +236,7 @@ def https_probe(domain, ip, timeout):
                 request = (
                     f"GET {path} HTTP/1.1\r\n"
                     f"Host: {domain}\r\n"
-                    f"User-Agent: checktmdb/1.5\r\n"
+                    f"User-Agent: checktmdb/1.6\r\n"
                     f"Accept: application/json, text/html, image/*, */*\r\n"
                     f"Range: bytes=0-511\r\n"
                     f"Connection: close\r\n\r\n"
@@ -272,7 +245,6 @@ def https_probe(domain, ip, timeout):
                 data = tls_sock.recv(512)
     except Exception:
         return None, None, path
-
     latency = int((time.monotonic() - start) * 1000)
     try:
         first_line = data.splitlines()[0].decode("iso-8859-1", errors="replace")
@@ -280,10 +252,8 @@ def https_probe(domain, ip, timeout):
         status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
     except Exception:
         status = 0
-
     if 100 <= status <= HTTPS_OK_STATUS_MAX:
         return latency, status, path
-
     return None, status, path
 
 
@@ -305,18 +275,15 @@ def choose_ip(domain, ips, timeout, max_workers, probe_mode):
     if domain in STRICT_HTTPS_DOMAINS and probe_mode == "https-with-tcp-fallback":
         log(f"test {domain}: strict HTTPS mode enabled")
         probe_mode = "https"
-
     fallback = ips[0] if ips and probe_mode != "https" else None
     best_ip = None
     best_latency = None
-
     worker_count = max(1, min(max_workers, len(ips) or 1))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         if probe_mode == "tcp":
             futures = {executor.submit(tcp_latency, ip, timeout): ip for ip in ips}
         else:
             futures = {executor.submit(https_probe, domain, ip, timeout): ip for ip in ips}
-
         for future in as_completed(futures):
             ip = futures[future]
             try:
@@ -324,44 +291,36 @@ def choose_ip(domain, ips, timeout, max_workers, probe_mode):
             except Exception as exc:
                 log(f"test {domain} {ip}: failed: {exc}")
                 continue
-
             if probe_mode == "tcp":
                 latency = result
                 status = None
                 path = None
             else:
                 latency, status, path = result
-
             if latency is None:
                 if status:
                     log(f"test {domain} {ip}: https failed, path={path}, status={status}")
                 else:
                     log(f"test {domain} {ip}: unreachable, path={path}")
                 continue
-
             if status:
                 log(f"test {domain} {ip}: https {status}, path={path}, {latency} ms")
             else:
                 log(f"test {domain} {ip}: tcp {latency} ms")
-
             if best_latency is None or latency < best_latency:
                 best_ip = ip
                 best_latency = latency
-
     if best_ip:
         return best_ip
-
     if probe_mode == "https-with-tcp-fallback":
         log(f"test {domain}: no HTTPS candidate, fallback to TCP probe")
         return choose_ip(domain, ips, timeout, max_workers, "tcp")
-
     return fallback
 
 
 def build_hosts(args):
     dns = DnsClient(args.country, args.dns_timeout)
     results = []
-
     for domain in DOMAINS:
         ipv4s = dns.query(domain, "A")
         ipv4 = choose_ip(domain, ipv4s, args.connect_timeout, args.workers, args.probe_mode)
@@ -370,7 +329,6 @@ def build_hosts(args):
             log(f"A {domain}: selected {ipv4}")
         else:
             log(f"A {domain}: skipped")
-
         if args.ipv6:
             ipv6s = dns.query(domain, "AAAA")
             ipv6 = choose_ip(domain, ipv6s, args.connect_timeout, args.workers, args.probe_mode)
@@ -379,27 +337,26 @@ def build_hosts(args):
                 log(f"AAAA {domain}: selected {ipv6}")
             else:
                 log(f"AAAA {domain}: skipped")
-
     return results
 
 
 def render_hosts(results, country, ipv6, probe_mode):
     update_time = datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0)
-    lines = [
-        "# CheckTMDB Hosts Start",
-        f"# Country: {country}",
-        f"# IPv6: {'1' if ipv6 else '0'}",
-        f"# Probe mode: {probe_mode}",
-    ]
+    lines = ["# CheckTMDB Hosts Start", f"# Country: {country}", f"# IPv6: {'1' if ipv6 else '0'}", f"# Probe mode: {probe_mode}"]
     for ip, domain in results:
         lines.append(f"{ip:<45} {domain}")
-    lines.extend(
-        [
-            f"# Update time: {update_time.isoformat()}",
-            "# CheckTMDB Hosts End",
-            "",
-        ]
-    )
+    lines.extend([f"# Update time: {update_time.isoformat()}", "# CheckTMDB Hosts End", ""])
+    return "\n".join(lines)
+
+
+def render_dnsmasq_conf(results, block_ipv6):
+    update_time = datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0)
+    lines = ["# CheckTMDB dnsmasq config", f"# Update time: {update_time.isoformat()}"]
+    for ip, domain in results:
+        lines.append(f"{DNSMASQ_RULE_PREFIX}{domain}/{ip}")
+        if block_ipv6 and is_ip(ip, 4):
+            lines.append(f"{DNSMASQ_RULE_PREFIX}{domain}/{IPV6_EMPTY_VALUE}")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -416,16 +373,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate CheckTMDB hosts for ImmortalWrt.")
     parser.add_argument("--country", choices=sorted(COUNTRY_ECS), default="cn")
     parser.add_argument("--output", default="/tmp/checktmdb.hosts.new")
+    parser.add_argument("--dnsmasq-output", default=DNSMASQ_CONF_DEFAULT)
+    parser.add_argument("--no-block-ipv6", action="store_true")
     parser.add_argument("--ipv6", action="store_true")
     parser.add_argument("--connect-timeout", "--timeout", dest="connect_timeout", type=float, default=1.5)
     parser.add_argument("--dns-timeout", type=float, default=5.0)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument(
-        "--probe-mode",
-        choices=("https", "https-with-tcp-fallback", "tcp"),
-        default="https-with-tcp-fallback",
-        help="https: require TCP+TLS+HTTP with SNI; tcp: old behavior; https-with-tcp-fallback: prefer HTTPS, fallback to TCP if no HTTPS candidate works",
-    )
+    parser.add_argument("--probe-mode", choices=("https", "https-with-tcp-fallback", "tcp"), default="https-with-tcp-fallback")
     return parser.parse_args()
 
 
@@ -436,7 +390,9 @@ def main():
         log("no hosts generated")
         return 1
     write_output(args.output, render_hosts(results, args.country, args.ipv6, args.probe_mode))
+    write_output(args.dnsmasq_output, render_dnsmasq_conf(results, not args.no_block_ipv6))
     log(f"generated {len(results)} hosts: {args.output}")
+    log(f"generated dnsmasq config: {args.dnsmasq_output}")
     return 0
 
 
