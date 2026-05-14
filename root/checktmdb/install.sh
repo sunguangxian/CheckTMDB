@@ -7,8 +7,8 @@ CRON_FILE="/etc/crontabs/root"
 COUNTRY="${CHECKTMDB_COUNTRY:-hk}"
 INTERVAL="${CHECKTMDB_INTERVAL:-6}"
 IPV6="${CHECKTMDB_IPV6:-0}"
-TIMEOUT="${CHECKTMDB_TIMEOUT:-1.5}"
-OUT="/tmp/checktmdb.hosts"
+TIMEOUT="${CHECKTMDB_TIMEOUT:-1.0}"
+DNS_CONF_DIR="/tmp/checktmdb.d"
 
 log() {
 	echo "[checktmdb] $*"
@@ -23,7 +23,7 @@ valid_interval() {
 
 valid_country() {
 	case "$1" in
-		hk|sg|jp|us) return 0 ;;
+		cn|hk|sg|jp|us) return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -37,25 +37,25 @@ install_deps() {
 ensure_dnsmasq() {
 	local item found
 
-	touch "$OUT"
+	mkdir -p "$DNS_CONF_DIR"
 	uci -q get dhcp.@dnsmasq[0] >/dev/null || {
 		log "dnsmasq config not found"
 		return 1
 	}
 
 	found=0
-	for item in $(uci -q get dhcp.@dnsmasq[0].addnhosts); do
-		[ "$item" = "$OUT" ] && found=1
+	for item in $(uci -q get dhcp.@dnsmasq[0].confdir); do
+		[ "$item" = "$DNS_CONF_DIR" ] && found=1
 	done
 
 	if [ "$found" = "0" ]; then
-		uci add_list dhcp.@dnsmasq[0].addnhosts="$OUT"
-		uci commit dhcp
-		log "dnsmasq addn-hosts added: $OUT"
+		uci add_list dhcp.@dnsmasq[0].confdir="$DNS_CONF_DIR"
+		log "dnsmasq confdir added: $DNS_CONF_DIR"
 	else
-		log "dnsmasq addn-hosts already exists"
+		log "dnsmasq confdir already exists"
 	fi
 
+	uci commit dhcp
 	/etc/init.d/dnsmasq restart
 }
 
@@ -94,9 +94,9 @@ install_files() {
 
 usage() {
 	cat <<EOF
-Usage: CHECKTMDB_COUNTRY=hk CHECKTMDB_INTERVAL=6 CHECKTMDB_IPV6=0 CHECKTMDB_TIMEOUT=1.5 sh install.sh
+Usage: CHECKTMDB_COUNTRY=hk CHECKTMDB_INTERVAL=6 CHECKTMDB_IPV6=0 CHECKTMDB_TIMEOUT=1.0 sh install.sh
 
-Countries: hk, sg, jp, us
+Countries: cn, hk, sg, jp, us
 Intervals: 6, 12, 24
 IPv6:      0, 1
 Timeout:   TCP connect timeout in seconds
