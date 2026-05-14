@@ -5,9 +5,10 @@ UPDATE_BASE="${CHECKTMDB_UPDATE_BASE:-https://raw.githubusercontent.com/sunguang
 COUNTRY="${CHECKTMDB_COUNTRY:-hk}"
 INTERVAL="${CHECKTMDB_INTERVAL:-6}"
 IPV6="${CHECKTMDB_IPV6:-0}"
-CONNECT_TIMEOUT="${CHECKTMDB_TIMEOUT:-1.5}"
-DNS_TIMEOUT="${CHECKTMDB_DNS_TIMEOUT:-5}"
-WORKERS="${CHECKTMDB_WORKERS:-4}"
+CONNECT_TIMEOUT="${CHECKTMDB_TIMEOUT:-1.0}"
+DNS_TIMEOUT="${CHECKTMDB_DNS_TIMEOUT:-3.0}"
+WORKERS="${CHECKTMDB_WORKERS:-6}"
+PROBE_MODE="${CHECKTMDB_PROBE_MODE:-https-with-tcp-fallback}"
 OUT="/tmp/checktmdb.hosts"
 NEW="/tmp/checktmdb.hosts.new"
 LOG="/tmp/checktmdb.log"
@@ -180,10 +181,10 @@ run_update() {
 		return 1
 	}
 
-	args="--country $COUNTRY --connect-timeout $CONNECT_TIMEOUT --dns-timeout $DNS_TIMEOUT --workers $WORKERS --output $NEW"
+	args="--country $COUNTRY --connect-timeout $CONNECT_TIMEOUT --dns-timeout $DNS_TIMEOUT --workers $WORKERS --probe-mode $PROBE_MODE --output $NEW"
 	[ "$IPV6" = "1" ] && args="$args --ipv6"
 
-	log "update started: country=$COUNTRY ipv6=$IPV6 connect_timeout=$CONNECT_TIMEOUT dns_timeout=$DNS_TIMEOUT"
+	log "update started: country=$COUNTRY ipv6=$IPV6 connect_timeout=$CONNECT_TIMEOUT dns_timeout=$DNS_TIMEOUT workers=$WORKERS probe_mode=$PROBE_MODE"
 	rm -f "$NEW"
 
 	# shellcheck disable=SC2086
@@ -203,6 +204,10 @@ show_status() {
 	echo "country=$COUNTRY"
 	echo "interval=$INTERVAL"
 	echo "ipv6=$IPV6"
+	echo "connect_timeout=$CONNECT_TIMEOUT"
+	echo "dns_timeout=$DNS_TIMEOUT"
+	echo "workers=$WORKERS"
+	echo "probe_mode=$PROBE_MODE"
 	echo "hosts=$OUT"
 	echo "log=$LOG"
 	echo "update_base=$UPDATE_BASE"
