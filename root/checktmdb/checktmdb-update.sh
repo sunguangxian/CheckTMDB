@@ -12,9 +12,31 @@ PROBE_MODE="${CHECKTMDB_PROBE_MODE:-https-with-tcp-fallback}"
 OUT="/tmp/checktmdb.hosts"
 NEW="/tmp/checktmdb.hosts.new"
 LOG="/tmp/checktmdb.log"
+LOG_MAX_BYTES="${CHECKTMDB_LOG_MAX_BYTES:-524288}"
 LOCK="/tmp/checktmdb.lock"
 PID_FILE="$LOCK/pid"
 SCRIPT_FILES="check_tmdb.py checktmdb-update.sh install.sh"
+
+trim_log() {
+	local size
+
+	[ -f "$LOG" ] || return 0
+	case "$LOG_MAX_BYTES" in
+		''|*[!0-9]*) LOG_MAX_BYTES=524288 ;;
+	esac
+	[ "$LOG_MAX_BYTES" -gt 0 ] || LOG_MAX_BYTES=524288
+
+	size=$(wc -c < "$LOG" 2>/dev/null) || return 0
+	size=$(printf '%s' "$size" | tr -d ' \t\r\n')
+	[ -n "$size" ] || return 0
+	[ "$size" -le "$LOG_MAX_BYTES" ] && return 0
+
+	tail -c "$LOG_MAX_BYTES" "$LOG" > "$LOG.trim" || {
+		rm -f "$LOG.trim"
+		return 0
+	}
+	mv "$LOG.trim" "$LOG"
+}
 
 log() {
 	local msg
@@ -184,18 +206,21 @@ run_update() {
 	args="--country $COUNTRY --connect-timeout $CONNECT_TIMEOUT --dns-timeout $DNS_TIMEOUT --workers $WORKERS --probe-mode $PROBE_MODE --output $NEW"
 	[ "$IPV6" = "1" ] && args="$args --ipv6"
 
-	log "update started: country=$COUNTRY ipv6=$IPV6 connect_timeout=$CONNECT_TIMEOUT dns_timeout=$DNS_TIMEOUT workers=$WORKERS probe_mode=$PROBE_MODE"
+	trim_log
+	log "update started: country=$COUNTRY ipv6=$IPV6 connect_timeout=$CONNECT_TIMEOUT dns_timeout=$DNS_TIMEOUT workers=$WORKERS probe_mode=$PROBE_MODE log_max_bytes=$LOG_MAX_BYTES"
 	rm -f "$NEW"
 
 	# shellcheck disable=SC2086
 	if python3 check_tmdb.py $args >> "$LOG" 2>&1 && [ -s "$NEW" ]; then
 		mv "$NEW" "$OUT"
 		/etc/init.d/dnsmasq reload >/dev/null 2>&1 || /etc/init.d/dnsmasq restart >/dev/null 2>&1
+		trim_log
 		log "TMDB hosts updated: $OUT"
 		return 0
 	fi
 
 	rm -f "$NEW"
+	trim_log
 	log "TMDB hosts update failed"
 	return 1
 }
@@ -210,6 +235,7 @@ show_status() {
 	echo "probe_mode=$PROBE_MODE"
 	echo "hosts=$OUT"
 	echo "log=$LOG"
+	echo "log_max_bytes=$LOG_MAX_BYTES"
 	echo "update_base=$UPDATE_BASE"
 	grep '^# Update time:' "$OUT" 2>/dev/null | sed 's/^# //'
 }

@@ -132,6 +132,8 @@ cat /tmp/checktmdb.hosts
 tail -n 200 /tmp/checktmdb.log
 ```
 
+`/tmp/checktmdb.log` 默认只保留最后 512 KiB。探测输出写完后会截断到这个大小，避免日志占满内存盘。需要调整时设置 `CHECKTMDB_LOG_MAX_BYTES`，单位是字节。
+
 查看正在运行的 CheckTMDB 任务：
 
 ```sh
